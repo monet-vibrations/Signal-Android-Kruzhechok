@@ -292,6 +292,7 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   private       boolean            canPlayContent;
   private       boolean            allowedToPlayInline;
   private       boolean            inlinePlaybackEnded;
+  private       boolean            isVideoNoteMessage;
   private       Projection.Corners bodyBubbleCorners;
   private       Colorizer          colorizer;
   private       boolean            hasWallpaper;
@@ -1130,6 +1131,10 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     return MessageRecordUtil.hasThumbnail(messageRecord);
   }
 
+  private boolean isVideoNote(MessageRecord messageRecord) {
+    return MessageRecordUtil.isVideoNote(messageRecord, context);
+  }
+
   private boolean hasSticker(MessageRecord messageRecord) {
     return MessageRecordUtil.hasSticker(messageRecord);
   }
@@ -1362,6 +1367,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
 
     footer.setPlaybackSpeedListener(null);
 
+    isVideoNoteMessage = isVideoNote(messageRecord);
+    if (mediaThumbnailStub.resolved()) {
+      mediaThumbnailStub.require().setVideoNote(false);
+    }
+
     if (isViewOnceMessage(messageRecord) && !messageRecord.isRemoteDelete()) {
       revealableStub.get().setVisibility(VISIBLE);
       if (mediaThumbnailStub.resolved()) mediaThumbnailStub.require().setVisibility(View.GONE);
@@ -1562,9 +1572,14 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       ViewUtil.updateLayoutParamsIfNonNull(groupSenderHolder, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 
       footer.setVisibility(VISIBLE);
-    } else if (hasNoBubble(messageRecord)) {
+    } else if (hasNoBubble(messageRecord) && !isVideoNoteMessage) {
       bodyBubble.setBackgroundColor(Color.TRANSPARENT);
     } else if (hasThumbnail(messageRecord)) {
+      if (isVideoNoteMessage) {
+        bodyBubble.setBackgroundColor(Color.TRANSPARENT);
+      }
+
+
       mediaThumbnailStub.require().setVisibility(View.VISIBLE);
       if (audioViewStub.resolved()) audioViewStub.get().setVisibility(View.GONE);
       if (documentViewStub.resolved()) documentViewStub.get().setVisibility(View.GONE);
@@ -1588,7 +1603,9 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       mediaThumbnailStub.require().setPlayVideoClickListener(playVideoClickListener);
       mediaThumbnailStub.require().setOnLongClickListener(passthroughClickListener);
       mediaThumbnailStub.require().setOnClickListener(passthroughClickListener);
-      mediaThumbnailStub.require().showShade(messageRecord.isDisplayBodyEmpty(getContext()) && !hasExtraText(messageRecord) && !hasCondensedContent(messageRecord));
+      mediaThumbnailStub.require().showShade(!isVideoNoteMessage && messageRecord.isDisplayBodyEmpty(getContext()) && !hasExtraText(messageRecord) && !hasCondensedContent(messageRecord));
+      mediaThumbnailStub.require().setVideoNote(isVideoNoteMessage);
+      mediaThumbnailStub.require().setVideoNoteProgressVisible(isVideoNoteMessage && allowedToPlayInline);
       mediaThumbnailStub.require().setImageResource(requestManager,
                                                     thumbnailSlides,
                                                     showControls,
@@ -1607,9 +1624,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
         }
       }
 
-      mediaThumbnailStub.require().setBorderless(false);
+      mediaThumbnailStub.require().setBorderless(isVideoNoteMessage);
 
-      setThumbnailCorners(messageRecord, previousRecord, nextRecord, isGroupThread);
+      if (!isVideoNoteMessage) {
+        setThumbnailCorners(messageRecord, previousRecord, nextRecord, isGroupThread);
+      }
 
       ViewUtil.updateLayoutParams(bodyText, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
       ViewUtil.updateLayoutParamsIfNonNull(groupSenderHolder, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1617,11 +1636,14 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       footer.setVisibility(VISIBLE);
 
       if (thumbnailSlides.size() == 1 &&
-          thumbnailSlides.get(0).isVideoGif() &&
+          (thumbnailSlides.get(0).isVideoGif() || isVideoNoteMessage) &&
           thumbnailSlides.get(0) instanceof VideoSlide)
       {
         Uri uri = thumbnailSlides.get(0).getUri();
-        if (uri != null) {
+        // An outgoing video note's file is replaced by AttachmentCompressionJob while sending, which breaks a player
+        // that's already reading it, so wait for the transfer to finish before playing it inline.
+        boolean transferring = isVideoNoteMessage && thumbnailSlides.get(0).getTransferState() != AttachmentTable.TRANSFER_PROGRESS_DONE;
+        if (uri != null && !transferring) {
           mediaItem = MediaItem.fromUri(uri);
         } else {
           mediaItem = null;
@@ -2531,6 +2553,10 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
 
   @Override
   public @Nullable InlineVideoLoopPolicy getLoopPolicy() {
+    if (isVideoNoteMessage) {
+      return getVideoNoteLoopPolicy();
+    }
+
     long    playingMessageId = messageRecord.getId();
     boolean wasRequested     = allowedToPlayInline;
 
@@ -2546,9 +2572,39 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     });
   }
 
+  /**
+   * Muted video notes loop forever. One tapped to play with sound plays once, then goes back to muted looping.
+   */
+  private @Nullable InlineVideoLoopPolicy getVideoNoteLoopPolicy() {
+    if (!allowedToPlayInline) {
+      return null;
+    }
+
+    long playingMessageId = messageRecord.getId();
+
+    return new InlineVideoLoopPolicy(1, () -> {
+      if (messageRecord != null && messageRecord.getId() == playingMessageId) {
+        allowedToPlayInline = false;
+
+        if (eventListener != null) {
+          eventListener.onPlayInlineContent(null);
+        }
+      }
+    });
+  }
+
   @Override
   public boolean isPlaybackRequested() {
+    if (isVideoNoteMessage) {
+      return mediaItem != null;
+    }
+
     return allowedToPlayInline && mediaItem != null;
+  }
+
+  @Override
+  public boolean getPlaysWithSound() {
+    return isVideoNoteMessage && allowedToPlayInline && mediaItem != null;
   }
 
   /**
@@ -2989,6 +3045,9 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     public void onClick(final View v, final Slide slide) {
       if (shouldInterceptClicks(messageRecord) || !batchSelected.isEmpty() || (isSuppressedInteractionMode() && (!slide.hasDocument() || (slide.hasDocument() && !MessageRecordUtil.isScheduled(messageRecord))))) {
         performClick();
+      } else if (isVideoNoteMessage && mediaItem != null && eventListener != null) {
+        // Tap toggles playback with sound; the controller switches the circle between muted looping and audible playback.
+        eventListener.onPlayInlineContent(allowedToPlayInline ? null : conversationMessage);
       } else if ((!canPlayContent || inlinePlaybackEnded) && mediaItem != null && eventListener != null) {
         eventListener.onPlayInlineContent(conversationMessage);
       } else if (MediaPreviewFragment.isContentTypeSupported(slide.getContentType()) && slide.getDisplayUri() != null) {

@@ -170,7 +170,7 @@ public class InputPanel extends ConstraintLayout
     this.recordTime             = new RecordTime(findViewById(R.id.record_time),
                                                  findViewById(R.id.microphone),
                                                  TimeUnit.HOURS.toSeconds(1),
-                                                 () -> microphoneRecorderView.cancelAction(false));
+                                                 this::onRecordTimeLimitHit);
     this.editMessageCancel      = findViewById(R.id.input_panel_exit_edit_mode);
     this.editMessageTitle       = findViewById(R.id.edit_message_title);
     this.editMessageThumbnail   = findViewById(R.id.edit_message_thumbnail);
@@ -606,9 +606,42 @@ public class InputPanel extends ConstraintLayout
     updateVisibility();
   }
 
+  private static final long VOICE_NOTE_LIMIT_SECONDS    = TimeUnit.HOURS.toSeconds(1);
+  private static final long VIDEO_NOTE_LIMIT_SECONDS    = 60;
+  private static final long VOICE_NOTE_MIN_DURATION_MS  = 1000;
+  private static final long VIDEO_NOTE_MIN_DURATION_MS  = 800;
+
+  private void onRecordTimeLimitHit() {
+    if (isRecordingVideoNote()) {
+      microphoneRecorderView.finishAction();
+    } else {
+      microphoneRecorderView.cancelAction(false);
+    }
+  }
+
+  /**
+   * @return True if the recording in progress (or, if none is in progress, the most recent one) is a video note.
+   */
+  public boolean isRecordingVideoNote() {
+    return microphoneRecorderView.getActiveRecordingMode() == MicrophoneRecorderView.RecordMode.VIDEO;
+  }
+
+  /**
+   * Finishes the current recording (held or locked) and sends it, e.g. when the video note duration limit is reached.
+   */
+  public void finishRecordingAndSend() {
+    microphoneRecorderView.finishAction();
+  }
+
   @Override
   public void onRecordPermissionRequired() {
-    if (listener != null) listener.onRecorderPermissionRequired();
+    if (listener == null) return;
+
+    if (isRecordingVideoNote()) {
+      listener.onVideoNotePermissionRequired();
+    } else {
+      listener.onRecorderPermissionRequired();
+    }
   }
 
   @Override
@@ -619,6 +652,8 @@ public class InputPanel extends ConstraintLayout
   @Override
   public void onRecordPressed() {
     if (listener != null) listener.onRecorderStarted();
+    recordTime.setLimitSeconds(isRecordingVideoNote() ? VIDEO_NOTE_LIMIT_SECONDS : VOICE_NOTE_LIMIT_SECONDS);
+    ((ImageView) findViewById(R.id.microphone)).setImageResource(isRecordingVideoNote() ? R.drawable.symbol_video_24 : R.drawable.ic_mic_24);
     recordTime.display();
     slideToCancel.display();
 
@@ -638,10 +673,13 @@ public class InputPanel extends ConstraintLayout
 
     if (listener != null) {
       Log.d(TAG, "Elapsed time: " + elapsedTime);
-      if (elapsedTime > 1000) {
+      boolean video       = isRecordingVideoNote();
+      long    minDuration = video ? VIDEO_NOTE_MIN_DURATION_MS : VOICE_NOTE_MIN_DURATION_MS;
+      if (elapsedTime > minDuration) {
         listener.onRecorderFinished();
       } else {
-        Toast.makeText(getContext(), R.string.InputPanel_tap_and_hold_to_record_a_voice_message_release_to_send, Toast.LENGTH_LONG).show();
+        Toast.makeText(getContext(), video ? R.string.InputPanel_hold_to_record_video_tap_to_switch_to_audio
+                                           : R.string.InputPanel_tap_and_hold_to_record_a_voice_message_release_to_send, Toast.LENGTH_LONG).show();
         listener.onRecorderCanceled(true);
       }
     }
@@ -875,6 +913,7 @@ public class InputPanel extends ConstraintLayout
     void onRecorderFinished();
     void onRecorderCanceled(boolean byUser);
     void onRecorderPermissionRequired();
+    void onVideoNotePermissionRequired();
     void onRecorderAlreadyInUse();
     void onEmojiToggle();
     void onLinkPreviewCanceled();
@@ -939,7 +978,7 @@ public class InputPanel extends ConstraintLayout
     private final @NonNull TextView recordTimeView;
     private final @NonNull View     microphone;
     private final @NonNull Runnable onLimitHit;
-    private final          long     limitSeconds;
+    private                long     limitSeconds;
     private                long     startTime;
 
     private RecordTime(@NonNull TextView recordTimeView, @NonNull View microphone, long limitSeconds, @NonNull Runnable onLimitHit) {
@@ -947,6 +986,11 @@ public class InputPanel extends ConstraintLayout
       this.microphone     = microphone;
       this.limitSeconds   = limitSeconds;
       this.onLimitHit     = onLimitHit;
+    }
+
+    @MainThread
+    void setLimitSeconds(long limitSeconds) {
+      this.limitSeconds = limitSeconds;
     }
 
     @MainThread

@@ -8,14 +8,20 @@ package org.thoughtcrime.securesms.video.inline
 import org.thoughtcrime.securesms.util.AnimationPlaybackPolicy
 
 /**
- * Ends a looping video once it has played the number of loops [AnimationPlaybackPolicy] allows for its duration.
+ * Ends a looping video once it has played the number of loops [AnimationPlaybackPolicy] allows for its duration, or
+ * [fixedLoops] loops when set.
  */
-class InlineVideoLoopPolicy(private val callback: Callback) {
+class InlineVideoLoopPolicy(
+  private val fixedLoops: Int,
+  private val callback: Callback
+) {
+
+  constructor(callback: Callback) : this(0, callback)
 
   private var loopsRemaining = -1L
 
   fun setMediaDuration(duration: Long) {
-    loopsRemaining = AnimationPlaybackPolicy.loopsOfSinglePlayback(duration).toLong()
+    loopsRemaining = if (fixedLoops > 0) fixedLoops.toLong() else AnimationPlaybackPolicy.loopsOfSinglePlayback(duration).toLong()
   }
 
   /**

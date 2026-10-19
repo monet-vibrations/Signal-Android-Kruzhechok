@@ -8895,5 +8895,21 @@
     <!-- Dialog body shown when the recovery key change limit is exhausted and the user does not have backups enabled. -->
     <string name="BackupKeyRotationDialogs__limit_exceeded_body_no_backups">You\'ve exhausted the number of new keys you can create. You will be able to create a new recovery key in 7 days.</string>
 
+    <!-- Round video messages (video notes): recording -->
+    <!-- Content description of the record button when it is in video note mode -->
+    <string name="conversation_activity__quick_attachment_drawer_record_and_send_video_note_description">Record and send video message</string>
+    <!-- Toast shown when a video message recording was too short -->
+    <string name="InputPanel_hold_to_record_video_tap_to_switch_to_audio">Hold to record a video message. Tap to switch to audio.</string>
+    <!-- Toast shown when recording a video message failed -->
+    <string name="VideoNoteRecorder__unable_to_record_video_message">Unable to record video message</string>
+    <!-- Dialog title asking for camera and microphone access to record video messages -->
+    <string name="VideoNoteRecorder__allow_access_camera_microphone">Allow access to your camera and microphone</string>
+    <!-- Dialog body explaining why camera and microphone access is needed -->
+    <string name="VideoNoteRecorder__to_send_video_messages_allow_signal_access">To send video messages, allow Signal access to your camera and microphone.</string>
+    <!-- Dialog body shown when camera or microphone permission was permanently denied -->
+    <string name="VideoNoteRecorder__signal_requires_camera_microphone_permissions">Signal needs the Camera and Microphone permissions to record video messages, but they have been permanently denied. Please continue to app settings, select \"Permissions\", and enable \"Camera\" and \"Microphone\".</string>
+    <!-- Toast shown when camera or microphone permission was denied -->
+    <string name="VideoNoteRecorder__signal_needs_camera_microphone_access">Signal needs camera and microphone access to record video messages.</string>
+
     <!-- EOF -->
 </resources>
