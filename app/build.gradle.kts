@@ -560,6 +560,12 @@ androidComponents {
       transformationRequest.set(renameRequest)
     }
 
+    // The sideloaded production build gets its own app ID so it installs next to the official Signal app
+    // instead of colliding with it (same ID, different signature).
+    if (variant.name == "playProdPerf") {
+      variant.applicationId.set("org.thoughtcrime.securesms.kruzhok")
+    }
+
     // Include the test-only library on non-release builds.
     if (variant.buildType == "release") {
       variant.packaging.jniLibs.excludes.add("**/libsignal_jni_testing.so")
