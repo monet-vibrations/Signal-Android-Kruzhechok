@@ -777,6 +777,8 @@ dependencies {
   implementation(libs.google.signin)
   implementation(libs.androidx.media)
   implementation(libs.bundles.media3)
+  implementation(libs.androidx.media3.transformer)
+  implementation(libs.androidx.media3.effect)
   implementation(libs.conscrypt.android)
   implementation(libs.signal.aesgcmprovider)
   implementation(libs.libsignal.android)

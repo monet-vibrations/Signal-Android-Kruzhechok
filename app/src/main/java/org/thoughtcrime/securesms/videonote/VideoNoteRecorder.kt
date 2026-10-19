@@ -10,8 +10,6 @@ import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
-import android.util.Rational
-import android.view.Surface
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -19,10 +17,7 @@ import android.widget.Toast
 import androidx.annotation.MainThread
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
-import androidx.camera.core.UseCaseGroup
-import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.ExperimentalPersistentRecording
 import androidx.camera.video.FallbackStrategy
@@ -181,25 +176,15 @@ class VideoNoteRecorder(
         .setTargetVideoEncodingBitRate(TARGET_VIDEO_BITRATE)
         .build()
 
-      return VideoCapture.Builder(recorder)
-        .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
-        .build()
+      // No mirroring and no ViewPort crop: either makes CameraX insert a GL surface processor whose renderer is
+      // initialized synchronously on the main thread when binding, which can stall the UI for seconds. The square
+      // crop happens in VideoNoteCornerBaker instead.
+      return VideoCapture.Builder(recorder).build()
     }
 
     private fun bindUseCases(provider: ProcessCameraProvider, preview: Preview, videoCapture: VideoCapture<Recorder>) {
-      val rotation = overlay.display?.rotation ?: fragment.view?.display?.rotation ?: Surface.ROTATION_0
-      val viewPort = ViewPort.Builder(Rational(1, 1), rotation)
-        .setScaleType(ViewPort.FILL_CENTER)
-        .build()
-
-      val useCaseGroup = UseCaseGroup.Builder()
-        .setViewPort(viewPort)
-        .addUseCase(preview)
-        .addUseCase(videoCapture)
-        .build()
-
       val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
-      provider.bindToLifecycle(fragment.viewLifecycleOwner, selector, useCaseGroup)
+      provider.bindToLifecycle(fragment.viewLifecycleOwner, selector, preview, videoCapture)
     }
 
     @SuppressLint("MissingPermission")
@@ -308,13 +293,21 @@ class VideoNoteRecorder(
       finish(deleteFile = false)
 
       SignalExecutors.BOUNDED.execute {
+        val baked = try {
+          VideoNoteCornerBaker.bake(context, file, TARGET_VIDEO_BITRATE)
+        } catch (e: Exception) {
+          Log.w(TAG, "Unable to bake video note corners, sending the original.", e)
+          null
+        }
+
         val slide = try {
-          createSlide(file)
+          createSlide(baked ?: file)
         } catch (e: Exception) {
           Log.w(TAG, "Failed to prepare video note.", e)
           null
         } finally {
           file.delete()
+          baked?.delete()
         }
 
         ThreadUtil.runOnMain {
