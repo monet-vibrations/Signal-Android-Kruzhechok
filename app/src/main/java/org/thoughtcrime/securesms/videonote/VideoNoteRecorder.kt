@@ -64,6 +64,13 @@ class VideoNoteRecorder(
 
     /** Just under StreamingTranscoder's pass-through threshold so the clip is sent as-is without re-encoding. */
     private const val TARGET_VIDEO_BITRATE = 1_000_000
+
+    /**
+     * The camera recording is only an intermediate that [VideoNoteCornerBaker] re-encodes at [TARGET_VIDEO_BITRATE], so
+     * capture at HD (the square crop of 4:3 HD is ~720px, close to the 768px output; SD would be upscaled from 480px)
+     * and a generous bitrate to avoid compounding compression artifacts.
+     */
+    private const val CAPTURE_VIDEO_BITRATE = 4_000_000
   }
 
   interface Callback {
@@ -172,8 +179,8 @@ class VideoNoteRecorder(
     private fun buildVideoCapture(): VideoCapture<Recorder> {
       val recorder = Recorder.Builder()
         .setAspectRatio(AspectRatio.RATIO_4_3)
-        .setQualitySelector(QualitySelector.from(Quality.SD, FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
-        .setTargetVideoEncodingBitRate(TARGET_VIDEO_BITRATE)
+        .setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)))
+        .setTargetVideoEncodingBitRate(CAPTURE_VIDEO_BITRATE)
         .build()
 
       // No mirroring and no ViewPort crop: either makes CameraX insert a GL surface processor whose renderer is

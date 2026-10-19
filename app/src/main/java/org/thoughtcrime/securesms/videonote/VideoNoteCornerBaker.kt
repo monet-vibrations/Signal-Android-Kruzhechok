@@ -12,6 +12,7 @@ import android.os.HandlerThread
 import androidx.annotation.OptIn
 import androidx.annotation.WorkerThread
 import android.media.MediaCodecInfo
+import android.media.MediaMetadataRetriever
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
@@ -41,7 +42,13 @@ object VideoNoteCornerBaker {
 
   private val TAG = Log.tag(VideoNoteCornerBaker::class.java)
 
-  private const val TIMEOUT_MS = 90_000L
+  /**
+   * Re-encoding runs several times faster than real time on hardware encoders, but slower than real time on software
+   * ones (emulators, some low-end devices), so allow a base plus a multiple of the clip's length before giving up and
+   * sending the original.
+   */
+  private const val TIMEOUT_BASE_MS = 30_000L
+  private const val TIMEOUT_PER_MEDIA_MS = 3L
   private const val OUTPUT_SIZE = 768
 
   /**
@@ -104,8 +111,9 @@ object VideoNoteCornerBaker {
       }
     }
 
+    val timeoutMs = TIMEOUT_BASE_MS + TIMEOUT_PER_MEDIA_MS * getDurationMs(input)
     val finished = try {
-      latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      latch.await(timeoutMs, TimeUnit.MILLISECONDS)
     } catch (e: InterruptedException) {
       false
     }
@@ -117,7 +125,7 @@ object VideoNoteCornerBaker {
 
     val exportResult = result.get()
     val failure: String? = when {
-      !finished -> "Timed out after $TIMEOUT_MS ms"
+      !finished -> "Timed out after $timeoutMs ms"
       error.get() != null -> "Export failed"
       exportResult == null -> "No export result"
       exportResult.videoMimeType != null && exportResult.videoMimeType != MimeTypes.VIDEO_H264 -> "Unexpected video codec ${exportResult.videoMimeType}"
@@ -137,5 +145,18 @@ object VideoNoteCornerBaker {
         "video ${exportResult.videoEncoderName} @ ${exportResult.averageVideoBitrate} bps, audio ${exportResult.audioMimeType}, ${output.length()} bytes"
     )
     return output
+  }
+
+  private fun getDurationMs(file: File): Long {
+    val retriever = MediaMetadataRetriever()
+    return try {
+      retriever.setDataSource(file.absolutePath)
+      retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+    } catch (e: Exception) {
+      Log.w(TAG, "Unable to read duration.", e)
+      0L
+    } finally {
+      retriever.release()
+    }
   }
 }

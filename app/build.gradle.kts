@@ -568,7 +568,7 @@ androidComponents {
 
     // Starting with minSdk 23, Android leaves native libraries uncompressed, which is fine for the Play Store, but not for our self-distributed APKs.
     // This reverts it to the legacy behavior, compressing the native libraries, and drastically reducing the APK file size.
-    if (variant.name.contains("website", ignoreCase = true) || variant.name.contains("github", ignoreCase = true)) {
+    if (variant.name.contains("website", ignoreCase = true) || variant.name.contains("github", ignoreCase = true) || variant.buildType == "perf") {
       variant.packaging.jniLibs.useLegacyPackaging.set(true)
     }
 

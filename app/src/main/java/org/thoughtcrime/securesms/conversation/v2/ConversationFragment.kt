@@ -5545,6 +5545,8 @@ class ConversationFragment :
       if (inputPanel.isRecordingVideoNote) {
         videoNoteRecorder.start()
       } else {
+        // A video note playing with sound would take audio focus back from the recorder, which ends the recording.
+        adapter.playInlineContent(null)
         voiceMessageRecordingDelegate.onRecorderStarted()
       }
     }
