@@ -566,6 +566,12 @@ androidComponents {
       variant.applicationId.set("org.thoughtcrime.securesms.kruzhok")
     }
 
+    // Give the self-distributed Kruzhechok release its own Android app identity.
+    // This lets it coexist with the official Signal app and use our own signing key.
+    if (variant.name == "githubProdRelease") {
+      variant.applicationId.set("org.thoughtcrime.securesms.kruzhechok")
+    }
+
     // Include the test-only library on non-release builds.
     if (variant.buildType == "release") {
       variant.packaging.jniLibs.excludes.add("**/libsignal_jni_testing.so")
