@@ -1,8 +1,8 @@
 name: Mark stale issues and PRs
 
 on:
-  schedule:
-    - cron: '0 2 * * *'  # daily at 02:00 UTC
+  # schedule:
+  #   - cron: '0 2 * * *'  # daily at 02:00 UTC
   workflow_dispatch:
 
 jobs:

@@ -560,6 +560,18 @@ androidComponents {
       transformationRequest.set(renameRequest)
     }
 
+    // The sideloaded production build gets its own app ID so it installs next to the official Signal app
+    // instead of colliding with it (same ID, different signature).
+    if (variant.name == "playProdPerf") {
+      variant.applicationId.set("org.thoughtcrime.securesms.kruzhok")
+    }
+
+    // Give the self-distributed Kruzhechok release its own Android app identity.
+    // This lets it coexist with the official Signal app and use our own signing key.
+    if (variant.name == "githubProdRelease") {
+      variant.applicationId.set("org.thoughtcrime.securesms.kruzhechok")
+    }
+
     // Include the test-only library on non-release builds.
     if (variant.buildType == "release") {
       variant.packaging.jniLibs.excludes.add("**/libsignal_jni_testing.so")
@@ -568,7 +580,7 @@ androidComponents {
 
     // Starting with minSdk 23, Android leaves native libraries uncompressed, which is fine for the Play Store, but not for our self-distributed APKs.
     // This reverts it to the legacy behavior, compressing the native libraries, and drastically reducing the APK file size.
-    if (variant.name.contains("website", ignoreCase = true) || variant.name.contains("github", ignoreCase = true)) {
+    if (variant.name.contains("website", ignoreCase = true) || variant.name.contains("github", ignoreCase = true) || variant.buildType == "perf") {
       variant.packaging.jniLibs.useLegacyPackaging.set(true)
     }
 
@@ -755,6 +767,7 @@ dependencies {
   implementation(libs.androidx.camera.extensions)
   implementation(libs.androidx.camera.lifecycle)
   implementation(libs.androidx.camera.view)
+  implementation(libs.androidx.camera.video)
   implementation(libs.androidx.concurrent.futures)
   implementation(libs.androidx.autofill)
   implementation(libs.androidx.biometric)
@@ -776,6 +789,8 @@ dependencies {
   implementation(libs.google.signin)
   implementation(libs.androidx.media)
   implementation(libs.bundles.media3)
+  implementation(libs.androidx.media3.transformer)
+  implementation(libs.androidx.media3.effect)
   implementation(libs.conscrypt.android)
   implementation(libs.signal.aesgcmprovider)
   implementation(libs.libsignal.android)

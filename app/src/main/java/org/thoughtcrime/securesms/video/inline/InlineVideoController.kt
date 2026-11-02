@@ -229,7 +229,12 @@ class InlineVideoController private constructor(
   private fun play(slot: InlineVideoSlot, candidate: Candidate) {
     slot.setMedia(candidate.mediaItem)
 
-    if (slot.hasPlaybackEnded) {
+    val withSound = candidate.cell.playsWithSound
+    if (slot.isSoundEnabled != withSound) {
+      // Switching between muted looping and audible playback always starts over.
+      slot.setSoundEnabled(withSound)
+      slot.restart(candidate.cell.loopPolicy)
+    } else if (slot.hasPlaybackEnded) {
       if (!candidate.cell.isPlaybackRequested) {
         candidate.cell.showStill()
         return

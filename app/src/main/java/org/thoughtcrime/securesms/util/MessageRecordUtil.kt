@@ -11,6 +11,7 @@ import org.thoughtcrime.securesms.database.model.Quote
 import org.thoughtcrime.securesms.database.model.databaseprotos.GiftBadge
 import org.thoughtcrime.securesms.mms.QuoteModel
 import org.thoughtcrime.securesms.mms.TextSlide
+import org.thoughtcrime.securesms.mms.VideoSlide
 import org.thoughtcrime.securesms.polls.PollRecord
 import org.thoughtcrime.securesms.stickers.StickerUrl
 
@@ -47,7 +48,20 @@ fun MessageRecord.isBorderless(context: Context): Boolean {
     (this as MmsMessageRecord).slideDeck.thumbnailSlide?.isBorderless == true
 }
 
-fun MessageRecord.hasNoBubble(context: Context): Boolean = hasSticker() || isBorderless(context) || (isTextOnly(context) && isJumbomoji(context) && (messageRanges?.ranges?.isEmpty() ?: true))
+/**
+ * A round video message ("video note") rendered as a bubble-less circle: a single captionless [VideoSlide] with
+ * [VideoSlide.isVideoNote]. Video notes with a quote, link preview or view-once fall back to the regular video bubble.
+ */
+fun MessageRecord.isVideoNote(context: Context): Boolean {
+  if (!isMms || isRemoteDelete || isViewOnceMessage() || hasQuote() || hasLinkPreview() || hasSticker() || !isCaptionlessMms(context)) {
+    return false
+  }
+
+  val slides = (this as MmsMessageRecord).slideDeck.thumbnailSlides
+  return slides.size == 1 && (slides[0] as? VideoSlide)?.isVideoNote() == true
+}
+
+fun MessageRecord.hasNoBubble(context: Context): Boolean = hasSticker() || isBorderless(context) || isVideoNote(context) || (isTextOnly(context) && isJumbomoji(context) && (messageRanges?.ranges?.isEmpty() ?: true))
 
 fun MessageRecord.hasOnlyThumbnail(context: Context): Boolean {
   return hasThumbnail() &&
@@ -56,6 +70,7 @@ fun MessageRecord.hasOnlyThumbnail(context: Context): Boolean {
     !hasSharedContact() &&
     !hasSticker() &&
     !isBorderless(context) &&
+    !isVideoNote(context) &&
     !isViewOnceMessage()
 }
 

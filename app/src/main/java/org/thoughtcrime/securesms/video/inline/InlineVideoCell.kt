@@ -23,6 +23,10 @@ interface InlineVideoCell {
   val isPlaybackRequested: Boolean
     get() = false
 
+  /** True to play with audio at full volume, e.g. a round video message the user tapped. */
+  val playsWithSound: Boolean
+    get() = false
+
   fun canPlayContent(): Boolean
   fun showStill()
   fun hideStill()

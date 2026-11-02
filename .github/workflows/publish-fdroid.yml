@@ -1,0 +1,241 @@
+name: Build, sign, and publish Kruzhechok F-Droid repo
+
+on:
+  workflow_dispatch:
+
+# Only manually dispatch this from the trusted round-video-messages branch.
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: fdroid-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/round-video-messages'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out workflow scripts
+        uses: actions/checkout@v4
+
+      - name: Check out the exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: src
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@v1
+
+      - name: Retrieve signing keys from 1Password
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          OP_ANDROID_KEYSTORE_REF: ${{ vars.OP_ANDROID_KEYSTORE_REF }}
+          OP_ANDROID_STOREPASS_REF: ${{ vars.OP_ANDROID_STOREPASS_REF }}
+          OP_ANDROID_KEYPASS_REF: ${{ vars.OP_ANDROID_KEYPASS_REF }}
+          OP_FDROID_KEYSTORE_REF: ${{ vars.OP_FDROID_KEYSTORE_REF }}
+          OP_FDROID_STOREPASS_REF: ${{ vars.OP_FDROID_STOREPASS_REF }}
+          OP_FDROID_KEYPASS_REF: ${{ vars.OP_FDROID_KEYPASS_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$OP_SERVICE_ACCOUNT_TOKEN" || { echo "Missing OP_SERVICE_ACCOUNT_TOKEN secret"; exit 1; }
+          for name in \
+            OP_ANDROID_KEYSTORE_REF OP_ANDROID_STOREPASS_REF OP_ANDROID_KEYPASS_REF \
+            OP_FDROID_KEYSTORE_REF OP_FDROID_STOREPASS_REF OP_FDROID_KEYPASS_REF; do
+            test -n "${!name}" || { echo "Missing GitHub Actions variable: $name"; exit 1; }
+          done
+
+          umask 077
+          op read "$OP_ANDROID_KEYSTORE_REF" > "$RUNNER_TEMP/android-release.jks"
+          op read "$OP_FDROID_KEYSTORE_REF" > "$RUNNER_TEMP/fdroid-repo.jks"
+
+          android_store_password="$(op read "$OP_ANDROID_STOREPASS_REF")"
+          android_key_password="$(op read "$OP_ANDROID_KEYPASS_REF")"
+          fdroid_store_password="$(op read "$OP_FDROID_STOREPASS_REF")"
+          fdroid_key_password="$(op read "$OP_FDROID_KEYPASS_REF")"
+
+          # Mask values before they can appear in any diagnostic output.
+          echo "::add-mask::$android_store_password"
+          echo "::add-mask::$android_key_password"
+          echo "::add-mask::$fdroid_store_password"
+          echo "::add-mask::$fdroid_key_password"
+
+          {
+            printf 'ANDROID_STORE_PASSWORD=%s\n' "$android_store_password"
+            printf 'ANDROID_KEY_PASSWORD=%s\n' "$android_key_password"
+            printf 'FDROID_STORE_PASSWORD=%s\n' "$fdroid_store_password"
+            printf 'FDROID_KEY_PASSWORD=%s\n' "$fdroid_key_password"
+          } >> "$GITHUB_ENV"
+
+          chmod 600 "$RUNNER_TEMP/android-release.jks" "$RUNNER_TEMP/fdroid-repo.jks"
+
+      - name: Build unsigned GitHub release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t kruzhechok-android ./src/reproducible-builds
+          mkdir -p out
+          export BUILD_KIND=release
+          export TYPE=github
+          export INDEX=0
+          export OUT=/out
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD/src:/project" -w /project \
+            -v "$PWD/out:/out" \
+            -v "$PWD/.github/scripts:/scripts:ro" \
+            -e BUILD_KIND -e TYPE -e INDEX -e OUT \
+            kruzhechok-android /scripts/build.sh
+
+      - name: Sign APK with the Android release key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the project's pinned Android Build Tools from its reproducible-build image.
+          docker run --rm \
+            -v "$PWD/out:/out" \
+            -v "$RUNNER_TEMP/android-release.jks:/signing/android-release.jks:ro" \
+            -e ANDROID_STORE_PASSWORD -e ANDROID_KEY_PASSWORD \
+            kruzhechok-android bash -s <<'BASH'
+          set -euo pipefail
+          SDK=/usr/local/android-sdk-linux
+          APK="$(find /out -maxdepth 1 -type f -name "*universal*.apk" -print -quit)"
+          test -n "$APK" || { echo "Could not find universal APK output"; exit 1; }
+
+          "$SDK/build-tools/36.0.0/apksigner" sign \
+            --ks /signing/android-release.jks \
+            --ks-key-alias kruzhechok \
+            --ks-pass env:ANDROID_STORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out /out/kruzhechok-signed.apk \
+            "$APK"
+
+          "$SDK/build-tools/36.0.0/apksigner" verify --verbose --print-certs /out/kruzhechok-signed.apk
+          VERSION_CODE=$("$SDK/build-tools/36.0.0/aapt" dump badging /out/kruzhechok-signed.apk \
+            | grep -o "versionCode='[0-9]*'" | cut -d "'" -f 2 | head -n 1)
+          test -n "$VERSION_CODE" || { echo "Could not read APK versionCode"; exit 1; }
+          mv /out/kruzhechok-signed.apk "/out/kruzhechok-${VERSION_CODE}.apk"
+          echo "Signed APK versionCode: $VERSION_CODE"
+          BASH
+
+      - name: Install F-Droid server tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fdroidserver
+
+      - name: Restore previously published repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          if git ls-remote --exit-code --heads origin fdroid-repo >/dev/null 2>&1; then
+            git fetch origin refs/heads/fdroid-repo:refs/remotes/origin/fdroid-repo
+            git archive origin/fdroid-repo | tar -x -C public
+          fi
+          mkdir -p public/repo fdroid-work/repo fdroid-work/metadata
+          find public/repo -maxdepth 1 -type f -name '*.apk' -exec cp -n {} fdroid-work/repo/ \;
+
+          NEW_APK="$(find "$PWD/out" -maxdepth 1 -type f -name 'kruzhechok-*.apk' -print -quit)"
+          test -n "$NEW_APK" || { echo "Signed APK not found"; exit 1; }
+          NEW_NAME="$(basename "$NEW_APK")"
+          if [ -f "fdroid-work/repo/$NEW_NAME" ]; then
+            if ! cmp -s "$NEW_APK" "fdroid-work/repo/$NEW_NAME"; then
+              echo "An APK with this versionCode is already published but has different contents. Increase versionCode before publishing an update." >&2
+              exit 1
+            fi
+            echo "This exact APK version is already in the repository."
+          else
+            cp "$NEW_APK" "fdroid-work/repo/$NEW_NAME"
+          fi
+
+      - name: Generate and sign F-Droid repository index
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/fdroid-repo.jks" "$RUNNER_TEMP/fdroid-repo-work.jks"
+          chmod 600 "$RUNNER_TEMP/fdroid-repo-work.jks"
+
+          python3 - <<'PY'
+          import json, os
+          config = {
+              "repo_url": "https://monet-vibrations.github.io/Signal-Android-Kruzhechok/repo",
+              "repo_name": "Kruzhechok F-Droid Repository",
+              "repo_description": "Unofficial F-Droid repository for Kruzhechok, a Signal Android fork.",
+              "repo_keyalias": "fdroidrepo",
+              "keystore": os.path.join(os.environ["RUNNER_TEMP"], "fdroid-repo-work.jks"),
+              "keystorepass": os.environ["FDROID_STORE_PASSWORD"],
+              "keypass": os.environ["FDROID_KEY_PASSWORD"],
+          }
+          with open("fdroid-work/config.yml", "w", encoding="utf-8") as f:
+              json.dump(config, f)
+              f.write("\n")
+          PY
+
+          cd fdroid-work
+          fdroid update --create-metadata
+
+          # Keep old APK versions and replace index/icon metadata with the freshly generated files.
+          cd ..
+          cp -a fdroid-work/repo/. public/repo/
+          touch public/.nojekyll
+          cat > public/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Kruzhechok F-Droid Repository</title>
+          <h1>Kruzhechok F-Droid Repository</h1>
+          <p>Add this repository URL to the F-Droid client:</p>
+          <p><code>https://monet-vibrations.github.io/Signal-Android-Kruzhechok/repo</code></p>
+          </html>
+          HTML
+
+      - name: Persist repository files for the next release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git show-ref --verify --quiet refs/remotes/origin/fdroid-repo; then
+            git worktree add "$RUNNER_TEMP/fdroid-persist" origin/fdroid-repo
+          else
+            git worktree add --orphan -b fdroid-repo "$RUNNER_TEMP/fdroid-persist"
+          fi
+
+          find "$RUNNER_TEMP/fdroid-persist" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a public/. "$RUNNER_TEMP/fdroid-persist/"
+          cd "$RUNNER_TEMP/fdroid-persist"
+          git add --all
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish F-Droid repository"
+            git push origin HEAD:refs/heads/fdroid-repo
+          else
+            echo "Repository files unchanged; nothing to persist."
+          fi
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+      - name: Deploy F-Droid repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          timeout: 600000
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/android-release.jks" "$RUNNER_TEMP/fdroid-repo.jks" "$RUNNER_TEMP/fdroid-repo-work.jks"
+          rm -rf fdroid-work out

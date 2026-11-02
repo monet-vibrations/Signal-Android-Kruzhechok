@@ -49,6 +49,21 @@ public class VideoSlide extends Slide {
     super(attachment);
   }
 
+  /**
+   * Creates a round video message ("video note"). Video notes are marked with the BORDERLESS attachment flag,
+   * which stock clients ignore for videos, so they gracefully fall back to a regular video bubble.
+   */
+  public static VideoSlide forVideoNote(Context context, Uri uri, long dataSize, int width, int height) {
+    return new VideoSlide(constructAttachmentFromUri(context, uri, MediaUtil.VIDEO_MP4, dataSize, width, height, MediaUtil.hasVideoThumbnail(context, uri), null, null, null, null, null, false, true, false, false, null));
+  }
+
+  /**
+   * @return true if this video should be rendered as a round video message.
+   */
+  public boolean isVideoNote() {
+    return attachment.borderless && !isVideoGif();
+  }
+
   @Override
   public boolean hasPlaceholder() {
     return true;
@@ -56,7 +71,7 @@ public class VideoSlide extends Slide {
 
   @Override
   public boolean hasPlayOverlay() {
-    return !(isVideoGif() && GiphyMp4PlaybackPolicy.autoplay());
+    return !((isVideoGif() || isVideoNote()) && GiphyMp4PlaybackPolicy.autoplay());
   }
 
   @Override

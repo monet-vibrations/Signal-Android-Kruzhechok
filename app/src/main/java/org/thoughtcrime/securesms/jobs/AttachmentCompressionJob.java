@@ -195,6 +195,12 @@ public final class AttachmentCompressionJob extends BaseJob {
     try {
       if (attachment.isSticker()) {
         Log.d(TAG, "Sticker, not compressing.");
+      } else if (MediaUtil.isVideo(attachment) && attachment.borderless && !attachment.videoGif && attachment.width > 0 && attachment.width == attachment.height && isConstraintsSatisfied(context, attachment, constraints)) {
+        // Video notes are encoded by VideoNoteCornerBaker to a small square H.264 file already. Re-encoding a short clip
+        // would cost time and quality, and StreamingTranscoder's size/duration bitrate estimate overshoots for them.
+        // If baking failed, the raw 4:3 camera recording is sent instead; it isn't square, so it's transcoded as usual.
+        Log.i(TAG, "Video note, already encoded. Not compressing.");
+        attachmentDatabase.markAttachmentAsTransformed(attachmentId, false);
       } else if (MediaUtil.isVideo(attachment)) {
         Log.i(TAG, "Compressing video.");
         attachment = transcodeVideoIfNeededToDatabase(context, attachmentDatabase, attachment, constraints, EventBus.getDefault(), this::isCanceled);

@@ -416,6 +416,7 @@ import org.thoughtcrime.securesms.util.visible
 import org.thoughtcrime.securesms.verify.VerifyIdentityActivity
 import org.thoughtcrime.securesms.video.inline.InlineVideoCell
 import org.thoughtcrime.securesms.video.inline.InlineVideoController
+import org.thoughtcrime.securesms.videonote.VideoNoteRecorder
 import org.thoughtcrime.securesms.wallpaper.ChatWallpaper
 import org.thoughtcrime.securesms.wallpaper.ChatWallpaperDimLevelUtil
 import java.time.Instant
@@ -967,6 +968,7 @@ class ConversationFragment :
   private lateinit var chatHost: ViewGroup
 
   private lateinit var voiceMessageRecordingDelegate: VoiceMessageRecordingDelegate
+  private lateinit var videoNoteRecorder: VideoNoteRecorder
 
   private val internalDidFirstFrameRender = MutableStateFlow(false)
   val didFirstFrameRender: StateFlow<Boolean> = internalDidFirstFrameRender
@@ -1782,6 +1784,12 @@ class ConversationFragment :
       this,
       AudioRecorder(requireContext(), inputPanel),
       VoiceMessageRecordingSessionCallbacks()
+    )
+
+    videoNoteRecorder = VideoNoteRecorder(
+      this,
+      binding.conversationItemRecyclerFrame,
+      VideoNoteRecorderCallbacks()
     )
 
     val conversationBannerListener = ConversationBannerListener()
@@ -5534,26 +5542,64 @@ class ConversationFragment :
     }
 
     override fun onRecorderStarted() {
-      voiceMessageRecordingDelegate.onRecorderStarted()
+      if (inputPanel.isRecordingVideoNote) {
+        videoNoteRecorder.start()
+      } else {
+        // A video note playing with sound would take audio focus back from the recorder, which ends the recording.
+        adapter.playInlineContent(null)
+        voiceMessageRecordingDelegate.onRecorderStarted()
+      }
     }
 
     override fun onRecorderLocked() {
       updateToggleButtonState()
-      voiceMessageRecordingDelegate.onRecorderLocked()
+      if (!inputPanel.isRecordingVideoNote) {
+        voiceMessageRecordingDelegate.onRecorderLocked()
+      }
     }
 
     override fun onRecorderFinished() {
       updateToggleButtonState()
-      voiceMessageRecordingDelegate.onRecorderFinished()
+      if (inputPanel.isRecordingVideoNote) {
+        videoNoteRecorder.stop(send = true)
+      } else {
+        voiceMessageRecordingDelegate.onRecorderFinished()
+      }
     }
 
     override fun onRecorderCanceled(byUser: Boolean) {
-      voiceMessageRecordingDelegate.onRecorderCanceled(byUser)
+      if (inputPanel.isRecordingVideoNote) {
+        // Video notes have no drafts, so any cancellation (by gesture, pause, or time limit) discards.
+        videoNoteRecorder.stop(send = false)
+      } else {
+        voiceMessageRecordingDelegate.onRecorderCanceled(byUser)
+      }
     }
 
     override fun onRecorderSaveDraft() {
+      if (inputPanel.isRecordingVideoNote) {
+        videoNoteRecorder.stop(send = false)
+        updateToggleButtonState()
+        return
+      }
       voiceMessageRecordingDelegate.onRecordSaveDraft()
       inputPanel.voiceNoteDraft = draftViewModel.voiceNoteDraft
+    }
+
+    override fun onVideoNotePermissionRequired() {
+      Permissions
+        .with(this@ConversationFragment)
+        .request(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        .ifNecessary()
+        .withRationaleDialog(
+          getString(R.string.VideoNoteRecorder__allow_access_camera_microphone),
+          getString(R.string.VideoNoteRecorder__to_send_video_messages_allow_signal_access),
+          R.drawable.ic_camera_24,
+          R.drawable.ic_mic_24
+        )
+        .withPermanentDenialDialog(getString(R.string.VideoNoteRecorder__signal_requires_camera_microphone_permissions))
+        .onAnyDenied { Toast.makeText(this@ConversationFragment.requireContext(), R.string.VideoNoteRecorder__signal_needs_camera_microphone_access, Toast.LENGTH_LONG).show() }
+        .execute()
     }
 
     override fun onRecorderPermissionRequired() {
@@ -5821,6 +5867,24 @@ class ConversationFragment :
 
         datePicker.show(childFragmentManager, "DATE_PICKER")
       }
+    }
+  }
+
+  private inner class VideoNoteRecorderCallbacks : VideoNoteRecorder.Callback {
+    override fun onVideoNoteRecordingWillBegin() {
+      getVoiceNoteMediaController().pausePlayback()
+      adapter.playInlineContent(null)
+    }
+
+    override fun onVideoNoteRecorded(slide: VideoSlide) {
+      sendMessageWithoutComposeInput(
+        slide = slide,
+        quote = inputPanel.quote.orNull()
+      )
+    }
+
+    override fun onVideoNoteDurationLimitReached() {
+      inputPanel.finishRecordingAndSend()
     }
   }
 

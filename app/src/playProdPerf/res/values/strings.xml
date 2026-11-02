@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Sideloaded production build with round video messages; installs next to the official Signal app. -->
+  <string name="app_name">Signal Kruzhok</string>
+</resources>

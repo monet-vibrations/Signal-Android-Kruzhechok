@@ -20,6 +20,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import org.thoughtcrime.securesms.video.exo.configureForGifPlayback
+import org.thoughtcrime.securesms.video.exo.configureForInlinePlaybackWithSound
+import org.thoughtcrime.securesms.video.exo.releaseAudioFocusHandling
 
 /**
  * A player paired with its own [textureView]. Cells borrow the whole slot, so the player's surface never changes when
@@ -44,6 +46,21 @@ class InlineVideoSlot(context: Context) : Player.Listener, RetainedTextureView.C
   var hasRenderedFirstFrame: Boolean = false
     private set
 
+  /** True while playing with audio; see [setSoundEnabled]. Always false right after [bindPlayer]. */
+  var isSoundEnabled: Boolean = false
+    private set
+
+  /** Playback position as a fraction of the duration, or 0 when unknown. */
+  val playbackProgress: Float
+    get() {
+      val player = player ?: return 0f
+      val duration = player.duration
+      if (duration == C.TIME_UNSET || duration <= 0) {
+        return 0f
+      }
+      return (player.currentPosition.toFloat() / duration).coerceIn(0f, 1f)
+    }
+
   private var surface: Surface? = null
   private val window = Timeline.Window()
 
@@ -67,6 +84,7 @@ class InlineVideoSlot(context: Context) : Player.Listener, RetainedTextureView.C
     check(this.player == null) { "Slot already has a player." }
 
     player.configureForGifPlayback()
+    isSoundEnabled = false
     player.playWhenReady = false
     player.addListener(this)
     player.addAnalyticsListener(firstFrameListener)
@@ -88,6 +106,12 @@ class InlineVideoSlot(context: Context) : Player.Listener, RetainedTextureView.C
     player.removeListener(this)
     player.removeAnalyticsListener(firstFrameListener)
     player.setVideoSurface(null)
+
+    if (isSoundEnabled) {
+      player.configureForGifPlayback()
+      player.releaseAudioFocusHandling()
+      isSoundEnabled = false
+    }
 
     this.player = null
     hasRenderedFirstFrame = false
@@ -115,6 +139,34 @@ class InlineVideoSlot(context: Context) : Player.Listener, RetainedTextureView.C
     loopPolicyHasDuration = false
     loopPolicyEnded = false
     player?.let { applyLoopPolicyDuration(it) }
+  }
+
+  /**
+   * Switches between muted (the default) and audible playback. Callers usually [replay] afterwards so audible playback
+   * starts from the beginning.
+   */
+  fun setSoundEnabled(enabled: Boolean) {
+    if (enabled == isSoundEnabled) {
+      return
+    }
+
+    isSoundEnabled = enabled
+    player?.let {
+      if (enabled) {
+        it.configureForInlinePlaybackWithSound()
+      } else {
+        it.configureForGifPlayback()
+        it.releaseAudioFocusHandling()
+      }
+    }
+  }
+
+  /**
+   * Like [replay], but keeps the current frame on screen while seeking so switching modes doesn't flash the still.
+   */
+  fun restart(loopPolicy: InlineVideoLoopPolicy?) {
+    setLoopPolicy(loopPolicy)
+    player?.seekTo(0)
   }
 
   val hasPlaybackEnded: Boolean

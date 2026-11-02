@@ -7,9 +7,15 @@ package org.thoughtcrime.securesms.components
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.RectF
 import android.os.Bundle
 import android.os.Parcelable
 import android.util.AttributeSet
+import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.annotation.ColorInt
@@ -46,6 +52,26 @@ class ConversationItemThumbnail @JvmOverloads constructor(
   private var gifBounds: IntArray
   private var minimumThumbnailWidth = 0
   private var maximumThumbnailHeight = 0
+
+  /** Round video message mode: a square thumbnail clipped to a circle. */
+  var isVideoNote = false
+    private set
+  private var videoNoteProgressVisible = false
+  private val defaultOutlineProvider: ViewOutlineProvider? = outlineProvider
+  private val defaultElevation: Float
+  private val progressRect = RectF()
+  private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeCap = Paint.Cap.ROUND
+    strokeWidth = 3.dp.toFloat()
+    color = Color.WHITE
+  }
+  private val progressTrackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeWidth = 3.dp.toFloat()
+    color = Color.WHITE
+    alpha = 0x4D
+  }
 
   init {
     inflate(context, R.layout.conversation_item_thumbnail, this)
@@ -86,6 +112,7 @@ class ConversationItemThumbnail @JvmOverloads constructor(
     maximumThumbnailHeight = -1
 
     state = ConversationItemThumbnailState()
+    defaultElevation = elevation
   }
 
   override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -103,7 +130,72 @@ class ConversationItemThumbnail @JvmOverloads constructor(
     if (!borderless) {
       cornerMask.mask(canvas)
     }
+
+    if (isVideoNote && videoNoteProgressVisible) {
+      drawVideoNoteProgress(canvas)
+    }
   }
+
+  private fun drawVideoNoteProgress(canvas: Canvas) {
+    val slot = surfaceHost.slot
+    if (slot == null || !slot.isSoundEnabled || !slot.hasRenderedFirstFrame) {
+      return
+    }
+
+    val inset = progressPaint.strokeWidth / 2f + 1.5f.dp
+    progressRect.set(inset, inset, width - inset, height - inset)
+    canvas.drawArc(progressRect, 0f, 360f, false, progressTrackPaint)
+    canvas.drawArc(progressRect, -90f, 360f * slot.playbackProgress, false, progressPaint)
+
+    postInvalidateOnAnimation()
+  }
+
+  /**
+   * Renders a single square video as a circle of [videoNoteSize]: no corner mask, no elevation, and both the still and
+   * the inline video surface clipped to an oval. Call before [setImageResource].
+   */
+  fun setVideoNote(videoNote: Boolean) {
+    if (videoNote == isVideoNote) {
+      return
+    }
+
+    isVideoNote = videoNote
+
+    if (videoNote) {
+      outlineProvider = OvalOutlineProvider
+      clipToOutline = true
+      elevation = 0f
+      val radius = videoNoteSize / 2
+      setCorners(radius, radius, radius, radius)
+      surfaceHost.setCornerRadius(radius.toFloat())
+    } else {
+      outlineProvider = defaultOutlineProvider
+      clipToOutline = false
+      elevation = defaultElevation
+      videoNoteProgressVisible = false
+      surfaceHost.setCornerRadius(0f)
+    }
+
+    invalidateOutline()
+    requestLayout()
+  }
+
+  /**
+   * Shows a progress ring around the circle while the hosted video plays with sound.
+   */
+  fun setVideoNoteProgressVisible(visible: Boolean) {
+    if (videoNoteProgressVisible != visible) {
+      videoNoteProgressVisible = visible
+      invalidate()
+    }
+  }
+
+  /** Diameter of a round video message: 0.6 × the shorter screen side, capped. */
+  val videoNoteSize: Int
+    get() {
+      val metrics = resources.displayMetrics
+      return (minOf(metrics.widthPixels, metrics.heightPixels) * 0.6f).toInt().coerceAtMost(MAX_VIDEO_NOTE_SIZE_DP.dp)
+    }
 
   override fun onSaveInstanceState(): Parcelable {
     val root = super.onSaveInstanceState()
@@ -218,7 +310,20 @@ class ConversationItemThumbnail @JvmOverloads constructor(
     isPreview: Boolean,
     @ColorInt missingThumbnailBackgroundColor: Int
   ) {
-    if (slides.size == 1) {
+    if (slides.size == 1 && isVideoNote) {
+      val size = videoNoteSize
+      setThumbnailBounds(intArrayOf(size, size, size, size))
+
+      state = state.copy(
+        thumbnailViewState = state.thumbnailViewState.copy(visibility = VISIBLE),
+        albumViewState = state.albumViewState.copy(visibility = GONE)
+      )
+
+      state.applyState(thumbnail, album)
+
+      thumbnail.get().setImageResource(requestManager, slides[0], showControls, isPreview, size, size, missingThumbnailBackgroundColor)
+      touchDelegate = thumbnail.get().touchDelegate
+    } else if (slides.size == 1) {
       val slide = slides[0]
 
       if (slide.isVideoGif) {
@@ -312,7 +417,14 @@ class ConversationItemThumbnail @JvmOverloads constructor(
     state.thumbnailViewState.applyState(thumbnail)
   }
 
+  private object OvalOutlineProvider : ViewOutlineProvider() {
+    override fun getOutline(view: View, outline: Outline) {
+      outline.setOval(0, 0, view.width, view.height)
+    }
+  }
+
   companion object {
+    private const val MAX_VIDEO_NOTE_SIZE_DP = 260
     private const val STATE_ROOT = "state.root"
     private const val STATE_STATE = "state.state"
   }

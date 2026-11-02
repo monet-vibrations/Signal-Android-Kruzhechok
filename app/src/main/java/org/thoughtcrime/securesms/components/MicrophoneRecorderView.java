@@ -5,6 +5,8 @@ import android.content.Context;
 import android.graphics.PorterDuff;
 import android.media.AudioManager;
 import android.util.AttributeSet;
+import android.content.SharedPreferences;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.animation.Animation;
@@ -16,6 +18,7 @@ import android.view.animation.OvershootInterpolator;
 import android.view.animation.ScaleAnimation;
 import android.view.animation.TranslateAnimation;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 
 import androidx.annotation.NonNull;
@@ -35,14 +38,34 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
     RUNNING_LOCKED
   }
 
+  /** What a press-and-hold on the record button records. A quick tap toggles between the two. */
+  public enum RecordMode {
+    AUDIO,
+    VIDEO
+  }
+
   public static final int ANIMATION_DURATION = 200;
+
+  /** A press shorter than this is a tap (toggles the mode); a longer one starts recording. */
+  private static final long HOLD_TO_RECORD_DELAY_MS = 150;
+
+  private static final String PREFS_NAME          = "video_note_prefs";
+  private static final String PREF_KEY_VIDEO_MODE = "record_mode_video";
 
   private           FloatingRecordButton   floatingRecordButton;
   private           LockDropTarget        lockDropTarget;
   private @Nullable AudioRecordingHandler handler;
   private @NonNull  State                 state = State.NOT_RUNNING;
+  private @NonNull  RecordMode            mode  = RecordMode.AUDIO;
+  private @NonNull  RecordMode            activeRecordingMode = RecordMode.AUDIO;
+  private           ImageButton           recordButton;
+  private           ImageView             recordButtonFab;
+  private           boolean               pressPending;
+  private           float                 pressDownX;
+  private           float                 pressDownY;
 
   private final AudioManager audioManager;
+  private final Runnable     startRecordingRunnable = this::onHoldDelayElapsed;
 
   public MicrophoneRecorderView(Context context) {
     super(context);
@@ -61,8 +84,47 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
     floatingRecordButton = new FloatingRecordButton(getContext(), findViewById(R.id.quick_audio_fab));
     lockDropTarget       = new LockDropTarget      (getContext(), findViewById(R.id.lock_drop_target));
 
-    View recordButton = findViewById(R.id.quick_audio_toggle);
+    recordButton    = findViewById(R.id.quick_audio_toggle);
+    recordButtonFab = findViewById(R.id.quick_audio_fab);
     recordButton.setOnTouchListener(this);
+
+    mode = isInEditMode() ? RecordMode.AUDIO : loadPersistedMode(getContext());
+    updateModeIcons();
+  }
+
+  public @NonNull RecordMode getRecordMode() {
+    return mode;
+  }
+
+  /**
+   * @return The mode of the recording in progress, or of the most recent one if none is in progress.
+   */
+  public @NonNull RecordMode getActiveRecordingMode() {
+    return activeRecordingMode;
+  }
+
+  private void toggleMode() {
+    mode = mode == RecordMode.AUDIO ? RecordMode.VIDEO : RecordMode.AUDIO;
+    getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_KEY_VIDEO_MODE, mode == RecordMode.VIDEO)
+                .apply();
+    updateModeIcons();
+    recordButton.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+  }
+
+  private void updateModeIcons() {
+    boolean video = mode == RecordMode.VIDEO;
+    int     icon  = video ? R.drawable.symbol_video_24 : org.signal.core.ui.R.drawable.symbol_mic_24;
+    recordButton.setImageResource(icon);
+    recordButton.setContentDescription(getContext().getString(video ? R.string.conversation_activity__quick_attachment_drawer_record_and_send_video_note_description
+                                                                    : R.string.conversation_activity__quick_attachment_drawer_record_and_send_audio_description));
+    recordButtonFab.setImageResource(icon);
+  }
+
+  private static @NonNull RecordMode loadPersistedMode(@NonNull Context context) {
+    SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    return prefs.getBoolean(PREF_KEY_VIDEO_MODE, false) ? RecordMode.VIDEO : RecordMode.AUDIO;
   }
 
   public void cancelAction(boolean byUser) {
@@ -113,6 +175,18 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
     }
   }
 
+  /**
+   * Finishes the current recording (held or locked) as if the user had released it, i.e. sends it.
+   */
+  public void finishAction() {
+    if (state != State.NOT_RUNNING) {
+      state = State.NOT_RUNNING;
+      hideUi();
+
+      if (handler != null) handler.onRecordReleased();
+    }
+  }
+
   private void hideUi() {
     floatingRecordButton.hide();
     lockDropTarget.hide();
@@ -120,26 +194,25 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
 
   @Override
   public boolean onTouch(View v, final MotionEvent event) {
-    boolean isMicPossiblyInUse = false;
-    if (audioManager != null) {
-      isMicPossiblyInUse = audioManager.getMode() == AudioManager.MODE_IN_COMMUNICATION || audioManager.getMode() == AudioManager.MODE_IN_CALL;
-    }
     switch (event.getAction()) {
       case MotionEvent.ACTION_DOWN:
-        if (!Permissions.hasAll(getContext(), Manifest.permission.RECORD_AUDIO)) {
-          if (handler != null) handler.onRecordPermissionRequired();
-        } else if (isMicPossiblyInUse) {
-          if (handler != null) handler.onRecorderAlreadyInUse();
-        } else if (state == State.NOT_RUNNING) {
-          state = State.RUNNING_HELD;
-          floatingRecordButton.display(event.getX(), event.getY());
-          lockDropTarget.display();
-          if (handler != null) handler.onRecordPressed();
+        if (state == State.NOT_RUNNING) {
+          pressPending = true;
+          pressDownX   = event.getX();
+          pressDownY   = event.getY();
+          removeCallbacks(startRecordingRunnable);
+          postDelayed(startRecordingRunnable, HOLD_TO_RECORD_DELAY_MS);
         }
         break;
       case MotionEvent.ACTION_CANCEL:
       case MotionEvent.ACTION_UP:
-        if (this.state == State.RUNNING_HELD) {
+        if (pressPending) {
+          pressPending = false;
+          removeCallbacks(startRecordingRunnable);
+          if (event.getAction() == MotionEvent.ACTION_UP) {
+            toggleMode();
+          }
+        } else if (this.state == State.RUNNING_HELD) {
           state = State.NOT_RUNNING;
           hideUi();
           if (handler != null) handler.onRecordReleased();
@@ -159,6 +232,40 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
     }
 
     return false;
+  }
+
+  private void onHoldDelayElapsed() {
+    if (!pressPending) return;
+    pressPending = false;
+
+    boolean isMicPossiblyInUse = false;
+    if (audioManager != null) {
+      isMicPossiblyInUse = audioManager.getMode() == AudioManager.MODE_IN_COMMUNICATION || audioManager.getMode() == AudioManager.MODE_IN_CALL;
+    }
+
+    boolean hasPermissions = mode == RecordMode.VIDEO ? Permissions.hasAll(getContext(), Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+                                                      : Permissions.hasAll(getContext(), Manifest.permission.RECORD_AUDIO);
+
+    if (!hasPermissions) {
+      activeRecordingMode = mode;
+      if (handler != null) handler.onRecordPermissionRequired();
+    } else if (isMicPossiblyInUse) {
+      activeRecordingMode = mode;
+      if (handler != null) handler.onRecorderAlreadyInUse();
+    } else if (state == State.NOT_RUNNING) {
+      activeRecordingMode = mode;
+      state               = State.RUNNING_HELD;
+      floatingRecordButton.display(pressDownX, pressDownY);
+      lockDropTarget.display();
+      if (handler != null) handler.onRecordPressed();
+    }
+  }
+
+  @Override
+  protected void onDetachedFromWindow() {
+    super.onDetachedFromWindow();
+    pressPending = false;
+    removeCallbacks(startRecordingRunnable);
   }
 
   public void setHandler(@Nullable AudioRecordingHandler handler) {
@@ -184,6 +291,8 @@ public final class MicrophoneRecorderView extends FrameLayout implements View.On
     void display(float x, float y) {
       this.startPositionX = x;
       this.startPositionY = y;
+      this.lastOffsetX    = 0;
+      this.lastOffsetY    = 0;
 
       recordButtonFab.setVisibility(View.VISIBLE);
 
